@@ -261,24 +261,25 @@ end
     @test MOI.get(model, MOI.RawParameter("tm_lim")) == 100
     @test_throws ErrorException MOI.get(model, MOI.RawParameter(:tm_lim))
     @test_throws ErrorException MOI.set(model, MOI.RawParameter(:tm_lim), 120)
-    @test_throws ErrorException MOI.set(model, MOI.RawParameter("bad"), 1)
-    @test_throws ErrorException MOI.get(model, MOI.RawParameter("bad"))
+    param = MOI.RawParameter("bad")
+    @test_throws MOI.UnsupportedAttribute(param) MOI.set(model, param, 1)
+    @test_throws MOI.UnsupportedAttribute(param) MOI.get(model, param)
 
     model = GLPK.Optimizer(method = GLPK.INTERIOR)
     exception = ErrorException("Invalid option: cb_func. Use the MOI attribute `GLPK.CallbackFunction` instead.")
     @test_throws exception MOI.set(model, MOI.RawParameter("cb_func"), (cb) -> nothing)
     MOI.set(model, MOI.RawParameter("tm_lim"), 100)
     @test MOI.get(model, MOI.RawParameter("tm_lim")) == 100
-    @test_throws ErrorException MOI.set(model, MOI.RawParameter("bad"), 1)
-    @test_throws ErrorException MOI.get(model, MOI.RawParameter("bad"))
+    @test_throws MOI.UnsupportedAttribute(param) MOI.set(model, MOI.RawParameter("bad"), 1)
+    @test_throws MOI.UnsupportedAttribute(param) MOI.get(model, MOI.RawParameter("bad"))
 
     model = GLPK.Optimizer(method = GLPK.EXACT)
     exception = ErrorException("Invalid option: cb_func. Use the MOI attribute `GLPK.CallbackFunction` instead.")
     @test_throws exception MOI.set(model, MOI.RawParameter("cb_func"), (cb) -> nothing)
     MOI.set(model, MOI.RawParameter("tm_lim"), 100)
     @test MOI.get(model, MOI.RawParameter("tm_lim")) == 100
-    @test_throws ErrorException MOI.set(model, MOI.RawParameter("bad"), 1)
-    @test_throws ErrorException MOI.get(model, MOI.RawParameter("bad"))
+    @test_throws MOI.UnsupportedAttribute(param) MOI.set(model, MOI.RawParameter("bad"), 1)
+    @test_throws MOI.UnsupportedAttribute(param) MOI.get(model, MOI.RawParameter("bad"))
 
     model = GLPK.Optimizer()
     MOI.set(model, MOI.RawParameter("mip_gap"), 0.001)
@@ -382,4 +383,93 @@ end
     MOI.optimize!(model)
     @test MOI.get(model, MOI.ObjectiveValue()) == 3.0
     @test MOI.get(model, MOI.ObjectiveBound()) == 3.0
+end
+
+@testset "Issue #116" begin
+    model = GLPK.Optimizer(method = GLPK.EXACT)
+    x = MOI.add_variables(model, 2)
+    c1 = MOI.add_constraint(
+        model,
+        MOI.ScalarAffineFunction(
+            [MOI.ScalarAffineTerm(1.0, x[1]), MOI.ScalarAffineTerm(1.0, x[2])],
+            0.0
+        ),
+        MOI.EqualTo(1.0)
+    )
+    MOI.add_constraint(model, MOI.SingleVariable(x[1]), MOI.EqualTo(1.0))
+    MOI.add_constraint(model, MOI.SingleVariable(x[2]), MOI.EqualTo(1.0))
+    MOI.optimize!(model)
+    @test MOI.get(model, MOI.TerminationStatus()) == MOI.INFEASIBLE
+    @test MOI.get(model, MOI.DualStatus()) == MOI.INFEASIBILITY_CERTIFICATE
+    @test MOI.get(model, MOI.ConstraintDual(), c1) == -1
+end
+
+@testset "Default parameters" begin
+    model = GLPK.Optimizer()
+    @test MOI.get(model, MOI.RawParameter("msg_lev")) == GLPK.MSG_ERR
+    @test MOI.get(model, MOI.RawParameter("presolve")) == GLPK.OFF
+    model = GLPK.Optimizer(msg_lev = GLPK.MSG_ALL, presolve = true)
+    @test MOI.get(model, MOI.RawParameter("msg_lev")) == GLPK.MSG_ALL
+    @test MOI.get(model, MOI.RawParameter("presolve")) == GLPK.ON
+end
+
+@testset "Duplicate names" begin
+    @testset "Variables" begin
+        model = GLPK.Optimizer()
+        (x, y, z) = MOI.add_variables(model, 3)
+        MOI.set(model, MOI.VariableName(), x, "x")
+        MOI.set(model, MOI.VariableName(), y, "x")
+        MOI.set(model, MOI.VariableName(), z, "z")
+        @test MOI.get(model, MOI.VariableIndex, "z") == z
+        @test_throws ErrorException MOI.get(model, MOI.VariableIndex, "x")
+        MOI.set(model, MOI.VariableName(), y, "y")
+        @test MOI.get(model, MOI.VariableIndex, "x") == x
+        @test MOI.get(model, MOI.VariableIndex, "y") == y
+        MOI.set(model, MOI.VariableName(), z, "x")
+        @test_throws ErrorException MOI.get(model, MOI.VariableIndex, "x")
+        MOI.delete(model, x)
+        @test MOI.get(model, MOI.VariableIndex, "x") == z
+    end
+    @testset "SingleVariable" begin
+        model = GLPK.Optimizer()
+        x = MOI.add_variables(model, 3)
+        c = MOI.add_constraints(model, MOI.SingleVariable.(x), MOI.GreaterThan(0.0))
+        MOI.set(model, MOI.ConstraintName(), c[1], "x")
+        MOI.set(model, MOI.ConstraintName(), c[2], "x")
+        MOI.set(model, MOI.ConstraintName(), c[3], "z")
+        @test MOI.get(model, MOI.ConstraintIndex, "z") == c[3]
+        @test_throws ErrorException MOI.get(model, MOI.ConstraintIndex, "x")
+        MOI.set(model, MOI.ConstraintName(), c[2], "y")
+        @test MOI.get(model, MOI.ConstraintIndex, "x") == c[1]
+        @test MOI.get(model, MOI.ConstraintIndex, "y") == c[2]
+        MOI.set(model, MOI.ConstraintName(), c[3], "x")
+        @test_throws ErrorException MOI.get(model, MOI.ConstraintIndex, "x")
+        MOI.delete(model, c[1])
+        @test MOI.get(model, MOI.ConstraintIndex, "x") == c[3]
+        MOI.set(model, MOI.ConstraintName(), c[2], "x")
+        @test_throws ErrorException MOI.get(model, MOI.ConstraintIndex, "x")
+        MOI.delete(model, x[3])
+        @test MOI.get(model, MOI.ConstraintIndex, "x") == c[2]
+    end
+    @testset "ScalarAffineFunction" begin
+        model = GLPK.Optimizer()
+        x = MOI.add_variables(model, 3)
+        fs = [
+            MOI.ScalarAffineFunction([MOI.ScalarAffineTerm(1.0, xi)], 0.0)
+            for xi in x
+        ]
+        c = MOI.add_constraints(model, fs, MOI.GreaterThan(0.0))
+        MOI.set(model, MOI.ConstraintName(), c[1], "x")
+        MOI.set(model, MOI.ConstraintName(), c[2], "x")
+        MOI.set(model, MOI.ConstraintName(), c[3], "z")
+        @test MOI.get(model, MOI.ConstraintIndex, "z") == c[3]
+        @test_throws ErrorException MOI.get(model, MOI.ConstraintIndex, "x")
+        MOI.set(model, MOI.ConstraintName(), c[2], "y")
+        @test MOI.get(model, MOI.ConstraintIndex, "x") == c[1]
+        @test MOI.get(model, MOI.ConstraintIndex, "y") == c[2]
+        MOI.set(model, MOI.ConstraintName(), c[3], "x")
+        @test_throws ErrorException MOI.get(model, MOI.ConstraintIndex, "x")
+        MOI.delete(model, c[1])
+        @test MOI.get(model, MOI.ConstraintIndex, "x") == c[3]
+    end
 end
